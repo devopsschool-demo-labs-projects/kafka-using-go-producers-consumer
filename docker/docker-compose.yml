@@ -1,0 +1,79 @@
+# =============================================================================
+#  OFFLINE FALLBACK CLUSTER
+# =============================================================================
+#
+#  The target for this course is Confluent Cloud. This file exists so that the
+#  material still works when the classroom wifi does not, and so the automated
+#  checks can run without burning cloud credit.
+#
+#  It is shaped to MATCH Confluent Cloud, so the same .properties files work
+#  against both:
+#     * three brokers, so replication.factor=3 is real
+#     * min.insync.replicas=2 is satisfiable, so acks=all means something
+#     * transaction state log replicated 3 ways, so exactly-once actually works
+#
+#  The ONE difference is security: this listener is PLAINTEXT with no auth,
+#  because running a private CA in a classroom teaches nothing about Kafka.
+#  Use config/local.properties to overlay that difference.
+#
+#  Start:  docker compose -f docker/docker-compose.yml up -d
+#  Stop:   docker compose -f docker/docker-compose.yml down -v
+# =============================================================================
+
+x-broker: &broker
+  image: confluentinc/cp-kafka:7.9.9
+  environment: &broker-env
+    KAFKA_PROCESS_ROLES: broker,controller
+    KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:9093,2@kafka2:9093,3@kafka3:9093
+    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+    KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+    CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+
+    # Internal topics replicated three ways, exactly as Confluent Cloud does it.
+    # The transaction ones matter for Phase 2's exactly-once section: a
+    # transactional producer cannot initialise if the transaction log cannot
+    # meet its own min.insync.replicas.
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+    KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    KAFKA_HEAP_OPTS: -Xms256m -Xmx768m
+
+services:
+  kafka1:
+    <<: *broker
+    container_name: kafka1
+    ports: ["9092:9092"]
+    environment:
+      <<: *broker-env
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENERS: INTERNAL://kafka1:19092,CONTROLLER://kafka1:9093,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka1:19092,EXTERNAL://localhost:9092
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  kafka2:
+    <<: *broker
+    container_name: kafka2
+    ports: ["9094:9094"]
+    environment:
+      <<: *broker-env
+      KAFKA_NODE_ID: 2
+      KAFKA_LISTENERS: INTERNAL://kafka2:19092,CONTROLLER://kafka2:9093,EXTERNAL://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka2:19092,EXTERNAL://localhost:9094
+
+  kafka3:
+    <<: *broker
+    container_name: kafka3
+    ports: ["9096:9096"]
+    environment:
+      <<: *broker-env
+      KAFKA_NODE_ID: 3
+      KAFKA_LISTENERS: INTERNAL://kafka3:19092,CONTROLLER://kafka3:9093,EXTERNAL://0.0.0.0:9096
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka3:19092,EXTERNAL://localhost:9096
