@@ -7,11 +7,20 @@ topics earlier ones create.
 Look settings up in [MANUAL.md](MANUAL.md). The `.properties` files carry the
 full reasoning for every knob, including the alternatives you are not using.
 
-**Numbers in this document are real captured output from a three-broker local
-cluster.** Yours will differ, and against Confluent Cloud they will differ a
-lot — a real network between you and the brokers changes every latency-sensitive
-result. Where that matters, the exercise says so. Record your own numbers; the
-*direction* of each change is the lesson, not the absolute figure.
+**Every output block in this document is real captured output**, mostly from a
+three-broker local cluster; blocks captured against Confluent Cloud are labelled
+as such. Yours will differ, and against Cloud they will differ a lot — a real
+network between you and the brokers changes every latency-sensitive result.
+
+Two kinds of variation are expected and are not you doing something wrong:
+
+- **Throughput and latency** depend entirely on your machine and network. The
+  *direction* of each change is the lesson, never the absolute figure.
+- **Anything the producer places randomly** — which partition an unkeyed batch
+  lands on, for instance — differs run to run. Where that happens the exercise
+  says so.
+
+Record your own numbers as you go.
 
 ---
 
@@ -201,7 +210,70 @@ partitions, some partitions get several keys and one gets none.
 ./bin/producer -set app.message.count=2000 -set app.null.keys=true
 ```
 
-Distribution flattens across all six — and per-key ordering is gone entirely.
+**Observe — and this surprises nearly everyone:**
+
+```
+  distribution across 1 partition(s):
+    partition 3     2000  ########################################
+```
+
+**You will very likely see a different partition number** — 0, 1, 4, whatever.
+The choice is random and changes run to run. What matters, and what is the same
+every time, is that there is exactly **one** of them.
+
+**All 2000 messages landed on a single partition.** Not one each, round-robin, as
+"no key means random" would suggest. This is not a bug, and it is worth
+understanding, because it is the most common wrong mental model of Kafka
+partitioning.
+
+The cause is `sticky.partitioning.linger.ms=10` in `config/producer.properties`.
+With a null key the producer picks **one** partition and *sticks to it* for that
+long, then moves on. Round-robining every individual message would defeat
+batching entirely — each partition would receive a thin trickle, so every batch
+would be tiny and compression would have nothing to work with. Sticking to one
+partition briefly builds a real batch, then rotates.
+
+So why did it never rotate here? **Partition selection happens when `Produce()`
+is called, not when the batch is sent.** `Produce()` is asynchronous, so all 2000
+messages are queued within a few milliseconds — comfortably inside one 10 ms
+sticky window — even though actually delivering them takes seconds. One window,
+one partition.
+
+**Prove it, two ways.** Turn sticky partitioning off, so every message is placed
+independently:
+
+```bash
+./bin/producer -set app.message.count=2000 -set app.null.keys=true -set sticky.partitioning.linger.ms=0
+```
+
+```
+  distribution across 6 partition(s):
+    partition 0      377  #######
+    partition 1      324  ######
+    partition 2      331  ######
+    partition 3      333  ######
+    partition 4      323  ######
+    partition 5      312  ######
+```
+
+(Captured on Confluent Cloud. The individual counts are random, so yours will not
+match — roughly even across all six is the result to look for.)
+
+Or leave sticky on and simply produce slowly, so real time passes between
+messages and the sticky windows expire:
+
+```bash
+./bin/producer -set app.message.count=300 -set app.null.keys=true -set app.interval=5ms
+```
+
+That also spreads across all six — which is what a long-running production
+producer does, because it lives for hours rather than milliseconds.
+
+**The lesson.** Either way, per-key ordering is gone: with no key there is no
+key to order by. But "no key" does **not** mean "one message per partition in
+turn". It means *the producer is free to choose*, and it chooses in whatever way
+batches best. If you need a specific placement, supply a key — do not infer it
+from a distribution you observed once.
 
 **Why.** Kafka orders messages **within a partition**, and the default
 partitioner sends equal keys to the same partition. So:

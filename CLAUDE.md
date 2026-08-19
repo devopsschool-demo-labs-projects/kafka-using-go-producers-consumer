@@ -102,6 +102,13 @@ Read `README.md` for the orientation. This file is the rules.
 - **A delivery report gives the final verdict, not the retriable cause.**
   `NOT_ENOUGH_REPLICAS` is retried until `delivery.timeout.ms` and surfaces as
   `Local: Message timed out`. Use `debug=broker,msg` to see the cause.
+- **Null-keyed messages do NOT round-robin.** `sticky.partitioning.linger.ms=10`
+  makes the producer hold one partition per window, and partition choice happens
+  at `Produce()` (queue time), not at send time - so a burst of 2000 async
+  produces all lands in ONE partition on local AND Cloud. LAB.md Exercise 2 said
+  "distribution flattens across all six", which was never measured and was wrong.
+  It now shows the real behaviour and has students set
+  `sticky.partitioning.linger.ms=0`, or slow the producer, to see the spread.
 - **`max.poll.interval.ms` must be >= `session.timeout.ms`**, enforced at
   construction. LAB.md Exercise 8 therefore lowers both. And because the consumer
   polls once per message, triggering an eviction needs `app.process.time` to
